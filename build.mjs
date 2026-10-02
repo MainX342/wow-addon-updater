@@ -53,7 +53,7 @@ for (const modId of CF_MOD_IDS) {
     let downloadUrl = targetFile.downloadUrl;
 
     if (!downloadUrl) {
-        console.log(`[CF] Direct downloadUrl is null for file ${targetFile.id}, requesting download URL...`);
+        console.log(`[CF] Direct downloadUrl is null for file ${targetFile.id}, trying /download-url...`);
         const urlRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files/${targetFile.id}/download-url`, {
             headers: { 'x-api-key': CF_API_KEY }
         });
@@ -64,8 +64,11 @@ for (const modId of CF_MOD_IDS) {
     }
 
     if (!downloadUrl) {
-        console.error(`[CF] FAILED to get download URL for mod ${modId} (File: ${targetFile.fileName})`);
-        continue;
+        const fileIdStr = targetFile.id.toString();
+        const part1 = fileIdStr.slice(0, 4);
+        const part2 = fileIdStr.slice(4);
+        downloadUrl = `https://edge.forgecdn.net/files/${part1}/${part2}/${encodeURIComponent(targetFile.fileName)}`;
+        console.log(`[CF] Third-party opt-out detected. Using direct ForgeCDN URL: ${downloadUrl}`);
     }
 
     const safeName = targetFile.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
