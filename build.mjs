@@ -28,27 +28,55 @@ async function downloadFile(url, destPath, headers = {}) {
 
 for (const modId of CF_MOD_IDS) {
     console.log(`[CF] Fetching metadata for mod ${modId}...`);
-    const metaRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files`, {
+
+    const metaRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files?pageSize=20`, {
         headers: { 'x-api-key': CF_API_KEY }
     });
+
     if (!metaRes.ok) {
-        console.error(`[CF] Error fetching mod ${modId}: ${metaRes.statusText}`);
+        console.error(`[CF] Error fetching mod ${modId}: ${metaRes.status} ${metaRes.statusText}`);
         continue;
     }
+
     const { data: files } = await metaRes.json();
-    const latestFile = files.sort((a, b) => new Date(b.fileDate) - new Date(a.fileDate))[0];
-    if (!latestFile || !latestFile.downloadUrl) {
-        console.warn(`[CF] No valid downloadUrl for ${modId}`);
+    if (!files || files.length === 0) {
+        console.warn(`[CF] No files found for mod ${modId}`);
         continue;
     }
 
-    const filePath = path.join(WORK_DIR, `cf_${modId}_${latestFile.fileName}`);
-    console.log(`[CF] Downloading ${latestFile.fileName}...`);
+    const sortedFiles = files.sort((a, b) => {
+        if (a.releaseType !== b.releaseType) return a.releaseType - b.releaseType;
+        return new Date(b.fileDate) - new Date(a.fileDate);
+    });
 
-    await downloadFile(latestFile.downloadUrl, filePath, { 'x-api-key': CF_API_KEY });
+    const targetFile = sortedFiles[0];
+    let downloadUrl = targetFile.downloadUrl;
+
+    if (!downloadUrl) {
+        console.log(`[CF] Direct downloadUrl is null for file ${targetFile.id}, requesting download URL...`);
+        const urlRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files/${targetFile.id}/download-url`, {
+            headers: { 'x-api-key': CF_API_KEY }
+        });
+        if (urlRes.ok) {
+            const urlData = await urlRes.json();
+            downloadUrl = urlData.data;
+        }
+    }
+
+    if (!downloadUrl) {
+        console.error(`[CF] FAILED to get download URL for mod ${modId} (File: ${targetFile.fileName})`);
+        continue;
+    }
+
+    const safeName = targetFile.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = path.join(WORK_DIR, `cf_${modId}_${safeName}`);
+
+    console.log(`[CF] Downloading ${targetFile.fileName}...`);
+    await downloadFile(downloadUrl, filePath, { 'x-api-key': CF_API_KEY });
 
     const zip = new AdmZip(filePath);
     zip.extractAllTo(EXTRACT_DIR, true);
+    console.log(`[CF] Extracted ${targetFile.fileName} successfully.`);
 }
 
 console.log('[GH] Fetching latest release for m33shoq/M33kAuras...');
