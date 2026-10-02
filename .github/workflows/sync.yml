@@ -1,0 +1,40 @@
+name: Sync Addons Bundle
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install adm-zip
+
+      - name: Run Addons Aggregator
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node build.mjs
+
+      - name: Publish / Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest Addons Bundle"
+          body: "Automated daily build of curated WoW addons."
+          draft: false
+          prerelease: false
+          files: addons-bundle.zip
