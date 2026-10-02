@@ -9,12 +9,8 @@ if (!CF_API_KEY) {
     process.exit(1);
 }
 
-// Список CurseForge Mod ID (числовые ID проектов)
-// ID можно взять на странице аддона на CurseForge в блоке About Project -> Project ID
 const CF_MOD_IDS = [
-    // Пример: 3358 (Details!), 24542 (Deadly Boss Mods), 1888 (Bagnon) и т.д.
-    // Замени на свои:
-    3358,
+    1361299, 1343483, 2382, 1418323, 1477613, 1441094, 4383,
 ];
 
 const WORK_DIR = path.resolve('temp_downloads');
@@ -30,10 +26,8 @@ async function downloadFile(url, destPath, headers = {}) {
     await pipeline(res.body, fs.createWriteStream(destPath));
 }
 
-// 1. CurseForge Addons
 for (const modId of CF_MOD_IDS) {
     console.log(`[CF] Fetching metadata for mod ${modId}...`);
-    // Эндпоинт v1 Core API CurseForge
     const metaRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files`, {
         headers: { 'x-api-key': CF_API_KEY }
     });
@@ -42,7 +36,6 @@ for (const modId of CF_MOD_IDS) {
         continue;
     }
     const { data: files } = await metaRes.json();
-    // Берём самый свежий релизный файл (releaseType 1 = release, 2 = beta, 3 = alpha)
     const latestFile = files.sort((a, b) => new Date(b.fileDate) - new Date(a.fileDate))[0];
     if (!latestFile || !latestFile.downloadUrl) {
         console.warn(`[CF] No valid downloadUrl for ${modId}`);
@@ -52,14 +45,12 @@ for (const modId of CF_MOD_IDS) {
     const filePath = path.join(WORK_DIR, `cf_${modId}_${latestFile.fileName}`);
     console.log(`[CF] Downloading ${latestFile.fileName}...`);
 
-    // Согласно блогу: передаем x-api-key заголовок на CDN edge.forgecdn.net
     await downloadFile(latestFile.downloadUrl, filePath, { 'x-api-key': CF_API_KEY });
 
     const zip = new AdmZip(filePath);
     zip.extractAllTo(EXTRACT_DIR, true);
 }
 
-// 2. GitHub: m33shoq/M33kAuras (latest release)
 console.log('[GH] Fetching latest release for m33shoq/M33kAuras...');
 const ghRes = await fetch('https://api.github.com/repos/m33shoq/M33kAuras/releases/latest', {
     headers: {
@@ -70,7 +61,6 @@ const ghRes = await fetch('https://api.github.com/repos/m33shoq/M33kAuras/releas
 
 if (ghRes.ok) {
     const release = await ghRes.json();
-    // Ищем прикрепленный .zip в release assets, либо берем zipball_url
     const asset = release.assets?.find(a => a.name.endsWith('.zip'));
     const zipUrl = asset ? asset.browser_download_url : release.zipball_url;
 
@@ -86,7 +76,6 @@ if (ghRes.ok) {
     console.error(`[GH] Failed to fetch M33kAuras release: ${ghRes.statusText}`);
 }
 
-// 3. Формируем единый бандл
 console.log('[ZIP] Packing addons bundle...');
 const bundleZip = new AdmZip();
 bundleZip.addLocalFolder(EXTRACT_DIR);
