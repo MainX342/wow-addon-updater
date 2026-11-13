@@ -1,6 +1,11 @@
 name: Sync Addons Bundle
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'build.mjs'
+      - '.github/workflows/sync.yml'
   schedule:
     - cron: '0 4 * * *'
   workflow_dispatch:
@@ -34,7 +39,10 @@ jobs:
         with:
           tag_name: latest
           name: "Latest Addons Bundle"
-          body: "Automated daily build of curated WoW addons."
+          body: "Automated bundles of curated WoW addons for Retail and Forever."
           draft: false
           prerelease: false
-          files: addons-bundle.zip
+          fail_on_unmatched_files: true
+          files: |
+            addons-bundle.zip
+            addons-bundle-forever.zip

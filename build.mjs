@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import AdmZip from 'adm-zip';
@@ -9,16 +10,27 @@ if (!CF_API_KEY) {
     process.exit(1);
 }
 
-const CF_MOD_IDS = [
-    1361299, 1343483, 2382, 1418323, 1477613, 1441094, 4383,
+const COMMON_MOD_IDS = [1361299, 1343483, 2382, 1418323, 1477613, 4383];
+const BUNDLES = [
+    {
+        name: 'Retail',
+        versionTypeId: 517,
+        modIds: [...COMMON_MOD_IDS, 1441094],
+        output: 'addons-bundle.zip',
+        includeM33: true,
+    },
+    {
+        name: 'Forever',
+        versionTypeId: 88568,
+        modIds: [...COMMON_MOD_IDS, 1707971],
+        output: 'addons-bundle-forever.zip',
+    },
 ];
 
-const WORK_DIR = path.resolve('temp_downloads');
-const EXTRACT_DIR = path.resolve('temp_extracted');
-const OUTPUT_ZIP = path.resolve('addons-bundle.zip');
-
-fs.mkdirSync(WORK_DIR, { recursive: true });
-fs.mkdirSync(EXTRACT_DIR, { recursive: true });
+const CF_HEADERS = { 'x-api-key': CF_API_KEY };
+const GH_HEADERS = { 'User-Agent': 'WoW-Addon-Sync-Agent' };
+const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'wow-addon-updater-'));
+const cfDownloads = new Map();
 
 async function downloadFile(url, destPath, headers = {}) {
     const res = await fetch(url, { headers });
@@ -26,89 +38,79 @@ async function downloadFile(url, destPath, headers = {}) {
     await pipeline(res.body, fs.createWriteStream(destPath));
 }
 
-for (const modId of CF_MOD_IDS) {
-    console.log(`[CF] Fetching metadata for mod ${modId}...`);
-
-    const metaRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files?pageSize=20`, {
-        headers: { 'x-api-key': CF_API_KEY }
+async function getCurseForgeArchive(modId, bundle) {
+    const api = `https://api.curseforge.com/v1/mods/${modId}/files`;
+    const metaRes = await fetch(`${api}?pageSize=20&gameVersionTypeId=${bundle.versionTypeId}`, {
+        headers: CF_HEADERS,
     });
-
     if (!metaRes.ok) {
-        console.error(`[CF] Error fetching mod ${modId}: ${metaRes.status} ${metaRes.statusText}`);
-        continue;
+        throw new Error(`[CF] ${bundle.name} mod ${modId}: ${metaRes.status} ${metaRes.statusText}`);
     }
 
     const { data: files } = await metaRes.json();
-    if (!files || files.length === 0) {
-        console.warn(`[CF] No files found for mod ${modId}`);
-        continue;
-    }
+    const targetFile = files?.sort((a, b) =>
+        a.releaseType - b.releaseType || Date.parse(b.fileDate) - Date.parse(a.fileDate)
+    )[0];
+    if (!targetFile) throw new Error(`[CF] No ${bundle.name} files found for mod ${modId}`);
 
-    const sortedFiles = files.sort((a, b) => {
-        if (a.releaseType !== b.releaseType) return a.releaseType - b.releaseType;
-        return new Date(b.fileDate) - new Date(a.fileDate);
-    });
+    console.log(`[CF] ${bundle.name}: ${targetFile.fileName}`);
+    if (cfDownloads.has(targetFile.id)) return cfDownloads.get(targetFile.id);
 
-    const targetFile = sortedFiles[0];
     let downloadUrl = targetFile.downloadUrl;
-
     if (!downloadUrl) {
-        console.log(`[CF] Direct downloadUrl is null for file ${targetFile.id}, trying /download-url...`);
-        const urlRes = await fetch(`https://api.curseforge.com/v1/mods/${modId}/files/${targetFile.id}/download-url`, {
-            headers: { 'x-api-key': CF_API_KEY }
-        });
-        if (urlRes.ok) {
-            const urlData = await urlRes.json();
-            downloadUrl = urlData.data;
-        }
+        const urlRes = await fetch(`${api}/${targetFile.id}/download-url`, { headers: CF_HEADERS });
+        if (urlRes.ok) downloadUrl = (await urlRes.json()).data;
     }
-
     if (!downloadUrl) {
-        const fileIdStr = targetFile.id.toString();
-        const part1 = fileIdStr.slice(0, 4);
-        const part2 = fileIdStr.slice(4);
+        const part1 = Math.floor(targetFile.id / 1000);
+        const part2 = targetFile.id % 1000;
         downloadUrl = `https://edge.forgecdn.net/files/${part1}/${part2}/${encodeURIComponent(targetFile.fileName)}`;
-        console.log(`[CF] Third-party opt-out detected. Using direct ForgeCDN URL: ${downloadUrl}`);
     }
 
-    const safeName = targetFile.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const filePath = path.join(WORK_DIR, `cf_${modId}_${safeName}`);
-
-    console.log(`[CF] Downloading ${targetFile.fileName}...`);
-    await downloadFile(downloadUrl, filePath, { 'x-api-key': CF_API_KEY });
-
-    const zip = new AdmZip(filePath);
-    zip.extractAllTo(EXTRACT_DIR, true);
-    console.log(`[CF] Extracted ${targetFile.fileName} successfully.`);
+    const filePath = path.join(WORK_DIR, `cf-${targetFile.id}.zip`);
+    await downloadFile(downloadUrl, filePath);
+    cfDownloads.set(targetFile.id, filePath);
+    return filePath;
 }
 
-console.log('[GH] Fetching latest release for m33shoq/M33kAuras...');
-const ghRes = await fetch('https://api.github.com/repos/m33shoq/M33kAuras/releases/latest', {
-    headers: {
-        'User-Agent': 'WoW-Addon-Sync-Agent',
-        ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {})
+async function getM33Archive() {
+    const headers = {
+        ...GH_HEADERS,
+        ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
+    };
+    const releaseRes = await fetch('https://api.github.com/repos/m33shoq/M33kAuras/releases/latest', { headers });
+    if (!releaseRes.ok) {
+        throw new Error(`[GH] M33kAuras: ${releaseRes.status} ${releaseRes.statusText}`);
     }
-});
-
-if (ghRes.ok) {
-    const release = await ghRes.json();
+    const release = await releaseRes.json();
     const asset = release.assets?.find(a => a.name.endsWith('.zip'));
-    const zipUrl = asset ? asset.browser_download_url : release.zipball_url;
+    if (!asset) throw new Error('[GH] No installable ZIP found for M33kAuras');
 
-    if (zipUrl) {
-        const ghFilePath = path.join(WORK_DIR, 'M33kAuras.zip');
-        console.log(`[GH] Downloading M33kAuras from ${zipUrl}...`);
-        await downloadFile(zipUrl, ghFilePath, { 'User-Agent': 'WoW-Addon-Sync-Agent' });
-
-        const zip = new AdmZip(ghFilePath);
-        zip.extractAllTo(EXTRACT_DIR, true);
-    }
-} else {
-    console.error(`[GH] Failed to fetch M33kAuras release: ${ghRes.statusText}`);
+    const filePath = path.join(WORK_DIR, 'M33kAuras.zip');
+    console.log(`[GH] Retail: ${asset.name}`);
+    await downloadFile(asset.browser_download_url, filePath, GH_HEADERS);
+    return filePath;
 }
 
-console.log('[ZIP] Packing addons bundle...');
-const bundleZip = new AdmZip();
-bundleZip.addLocalFolder(EXTRACT_DIR);
-bundleZip.writeZip(OUTPUT_ZIP);
-console.log(`[DONE] Created ${OUTPUT_ZIP}`);
+try {
+    for (const bundle of BUNDLES) {
+        const extractDir = path.join(WORK_DIR, bundle.name);
+        fs.mkdirSync(extractDir);
+
+        for (const modId of bundle.modIds) {
+            const archive = await getCurseForgeArchive(modId, bundle);
+            new AdmZip(archive).extractAllTo(extractDir, true);
+        }
+        if (bundle.includeM33) {
+            const archive = await getM33Archive();
+            new AdmZip(archive).extractAllTo(extractDir, true);
+        }
+
+        const output = new AdmZip();
+        output.addLocalFolder(extractDir);
+        output.writeZip(bundle.output);
+        console.log(`[ZIP] Created ${bundle.output}`);
+    }
+} finally {
+    fs.rmSync(WORK_DIR, { recursive: true, force: true });
+}
